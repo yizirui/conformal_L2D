@@ -1,0 +1,10 @@
+name: cifar10_major
+dataset: CIFAR10
+evaluation: sets
+model: SimpleCNN
+surrogate: OvA
+alpha: 0.1
+random_seed: 42
+batch_size: 256
+corruptions: brightness
+# Figure 2 uses CIFAR-10-C levels 1–5, then SVHN at level 6 for conformal sets.

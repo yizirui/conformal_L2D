@@ -1,23 +1,15 @@
 from abc import ABC, abstractmethod
 import copy
-import math
-import torch
-import numpy as np
-import torch.nn as nn
-import torch.nn.functional as F
-import argparse
-import os
-import random
-import shutil
-import time
-import torch.utils.data as data
-import sys
-import pickle
 import logging
+import time
+
+import numpy as np
+import torch
+import torch.nn.functional as F
 from tqdm import tqdm
-sys.path.append("..")
-from helpers.utils import *
-from helpers.metrics import *
+
+from helpers.metrics import compute_deferral_metrics
+from helpers.utils import AverageMeter, accuracy
 
 
 class BaseMethod(ABC):
@@ -31,10 +23,6 @@ class BaseMethod(ABC):
     def fit(self, *args, **kwargs):
         """this function should fit the model and be enough to evaluate the model"""
         pass
-
-    def fit_hyperparam(self, *args, **kwargs):
-        """This is an optional method that fits and optimizes hyperparameters over a validation set"""
-        return self.fit(*args, **kwargs)
 
     @abstractmethod
     def test(self, dataloader):
@@ -90,7 +78,6 @@ class BaseSurrogateMethod(BaseMethod):
         for batch, (data_x, data_y, hum_preds) in enumerate(dataloader):
             if epoch < warmup_iters:
                 lr_ = lrate * float(epoch) / warmup_iters
-                print(f'warmup_iters {epoch}, {lrate}')
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = lr_
             data_x = data_x.to(self.device)
@@ -98,6 +85,8 @@ class BaseSurrogateMethod(BaseMethod):
             hum_preds = hum_preds.to(self.device)
             outputs = self.model(data_x)
             loss = self.surrogate_loss_function(outputs, hum_preds, data_y)
+            if not torch.isfinite(loss):
+                raise FloatingPointError(f"Non-finite training loss ({loss.item()}) at epoch {epoch}, batch {batch}.")
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -106,10 +95,6 @@ class BaseSurrogateMethod(BaseMethod):
             top1.update(prec1.item(), data_x.size(0))
             batch_time.update(time.time() - end)
             end = time.time()
-            if torch.isnan(loss):
-                print("Nan loss")
-                logging.warning(f"NAN LOSS")
-                break
             if verbose and batch % self.plotting_interval == 0:
                 logging.info(
                     "Epoch: [{0}][{1}/{2}]\t"
@@ -138,15 +123,21 @@ class BaseSurrogateMethod(BaseMethod):
         test_interval=5,
         warmup_iters=0,
     ):
+        """Train for the requested epochs and keep the final weights if no validation loader is given.
+
+        A validation loader enables the original checkpoint selection and optional threshold
+        fitting. A test loader requests metrics for the resulting model.
+        """
+        if self.learnable_threshold_rej and dataloader_val is None:
+            raise ValueError("Learning a rejector threshold requires a validation loader.")
         optimizer = optimizer(self.model.parameters(), lr=lr)
         if scheduler is not None:
             scheduler = scheduler(optimizer, len(dataloader_train) * epochs)
         best_acc = 0
-        # store current model dict
-        best_model = copy.deepcopy(self.model.state_dict())
+        best_model = copy.deepcopy(self.model.state_dict()) if dataloader_val is not None else None
         for epoch in tqdm(range(epochs)):
             self.fit_epoch(dataloader_train, optimizer, verbose, epoch, warmup_iters=warmup_iters, lrate=lr)
-            if epoch % test_interval == 0 and epoch > 1 :
+            if dataloader_val is not None and epoch % test_interval == 0 and epoch > 1:
                 if self.learnable_threshold_rej:
                     self.fit_treshold_rej(dataloader_val)
                 data_test = self.test(dataloader_val)
@@ -155,23 +146,22 @@ class BaseSurrogateMethod(BaseMethod):
                     best_acc = val_metrics["system_acc"]
                     best_model = copy.deepcopy(self.model.state_dict())
                 if verbose:
-                    logging.info(compute_deferral_metrics(data_test))
+                    logging.info(val_metrics)
             if scheduler is not None:
                 scheduler.step()
-        self.model.load_state_dict(best_model)
+        if best_model is not None:
+            self.model.load_state_dict(best_model)
         if self.learnable_threshold_rej:
             self.fit_treshold_rej(dataloader_val)
+        if dataloader_test is None:
+            return
         final_test = self.test(dataloader_test)
         return compute_deferral_metrics(final_test)
 
     def fit_treshold_rej(self, dataloader):
         data_test = self.test(dataloader)
         rej_scores = np.unique(data_test["rej_score"])
-        # sort by rejection score
-        # get the 100 quantiles for rejection scores
         rej_scores_quantiles = np.quantile(rej_scores, np.linspace(0, 1, 100))
-        # for each quantile, get the coverage and accuracy by getting a new deferral decision
-        all_metrics = []
         best_treshold = 0
         best_accuracy = 0
         for q in rej_scores_quantiles:
@@ -196,13 +186,13 @@ class BaseSurrogateMethod(BaseMethod):
         truths_all = []
         hum_preds_all = []
         predictions_all = []  # classifier only
-        rej_score_all = []  # rejector probability
+        rej_score_all = []  # Base routing margin: expert score minus the best class score.
         class_probs_all = []  # classifier probability
         output_g_all = []
         rej_prob_all = []
         self.model.eval()
         with torch.no_grad():
-            for batch, (data_x, data_y, hum_preds) in enumerate(dataloader):
+            for data_x, data_y, hum_preds in dataloader:
                 data_x = data_x.to(self.device)
                 data_y = data_y.to(self.device)
                 hum_preds = hum_preds.to(self.device)
@@ -211,45 +201,26 @@ class BaseSurrogateMethod(BaseMethod):
                 output_g_all.extend(outputs.detach().cpu().numpy())
                 outputs_class = F.softmax(outputs[:, :-1], dim=1)
                 outputs = F.softmax(outputs, dim=1)
-                _, predicted = torch.max(outputs.data, 1)
-                max_probs, predicted_class = torch.max(outputs.data[:, :-1], 1)
+                predicted_class = outputs[:, :-1].argmax(dim=1)
                 predictions_all.extend(predicted_class.cpu().numpy())
                 
-                defer_scores = [ outputs.data[i][-1].item() - outputs.data[i][predicted_class[i]].item() for i in range(len(outputs.data))]
-                defer_binary = [int(defer_score >= self.threshold_rej) for defer_score in defer_scores]
-                defers_all.extend(defer_binary)
+                expert_scores = outputs[:, -1].tolist()
+                classifier_scores = outputs.gather(1, predicted_class[:, None]).flatten().tolist()
+                margins = [expert - classifier for expert, classifier in zip(expert_scores, classifier_scores)]
+                rej_score_all.extend(margins)
+                rej_prob_all.extend(expert_scores)
+                defers_all.extend(int(margin >= self.threshold_rej) for margin in margins)
                 truths_all.extend(data_y.cpu().numpy())
                 hum_preds_all.extend(hum_preds.cpu().numpy())
-                for i in range(len(outputs.data)):
-                    rej_score_all.append(
-                        outputs.data[i][-1].item()
-                        - outputs.data[i][predicted_class[i]].item()
-                    )
-                    rej_prob_all.append(
-                        outputs.data[i][-1].item()
-                    )
                 class_probs_all.extend(outputs_class.cpu().numpy())
 
-        # convert to numpy
-        defers_all = np.array(defers_all)
-        truths_all = np.array(truths_all)
-        hum_preds_all = np.array(hum_preds_all)
-        predictions_all = np.array(predictions_all)
-        rej_score_all = np.array(rej_score_all)
-        class_probs_all = np.array(class_probs_all)
-        
-        output_g_all = np.array(output_g_all)
-        print(f'Shape of output_g_all: {output_g_all.shape}')
-        rej_prob_all = np.array(rej_prob_all)
-        data = {
-            "defers": defers_all,
-            "labels": truths_all,
-            "hum_preds": hum_preds_all,
-            "preds": predictions_all,
-            "rej_score": rej_score_all,
-            "class_probs": class_probs_all,
-            "output_g_all": output_g_all,
-            "rej_prob_all": rej_prob_all,
+        return {
+            "defers": np.array(defers_all),
+            "labels": np.array(truths_all),
+            "hum_preds": np.array(hum_preds_all),
+            "preds": np.array(predictions_all),
+            "rej_score": np.array(rej_score_all),
+            "class_probs": np.array(class_probs_all),
+            "output_g_all": np.array(output_g_all),
+            "rej_prob_all": np.array(rej_prob_all),
         }
-        return data
-        

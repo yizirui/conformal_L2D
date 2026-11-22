@@ -1,0 +1,10 @@
+name: cifar10_intervals
+dataset: CIFAR10
+evaluation: intervals
+model: SimpleCNN
+surrogate: OvA
+alpha: 0.1
+random_seed: 42
+batch_size: 256
+corruptions: brightness
+max_severity: 5

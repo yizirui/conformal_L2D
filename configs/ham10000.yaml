@@ -1,0 +1,10 @@
+name: ham10000_major
+dataset: HAM10000
+evaluation: sets
+model: ResNet34
+surrogate: OvA
+alpha: 0.1
+random_seed: 42
+batch_size: 500
+corruptions: noise
+max_severity: 6

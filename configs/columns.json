@@ -1,0 +1,32 @@
+{
+  "columns": [
+    "method",
+    "corruption",
+    "severity",
+    "expert_k",
+    "dataset",
+    "model_name",
+    "surrogate_fun",
+    "alpha",
+    "empirical_coverage",
+    "empirical_width",
+    "accuracy",
+    "ratio_defer",
+    "non_abstention_acc",
+    "non_abstention_deferral_ratio",
+    "non_abstention_ratio",
+    "consensus_acc",
+    "consensus_deferral_ratio",
+    "consensus_ratio",
+    "human_preferred_acc",
+    "human_preferred_deferral_ratio",
+    "uncertainty_rejector_acc",
+    "uncertainty_classifier_acc"
+  ],
+  "interval_columns": [
+    "model_preferred_acc",
+    "model_preferred_deferral_ratio",
+    "model_preferred_uncertainty_rejector_acc",
+    "model_preferred_uncertainty_classifier_acc"
+  ]
+}

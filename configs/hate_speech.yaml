@@ -1,0 +1,10 @@
+name: hate_speech_major
+dataset: HateSpeech
+evaluation: sets
+model: LinearNet
+surrogate: OvA
+alpha: 0.1
+random_seed: 42
+batch_size: 4096
+corruptions: mask
+max_severity: 6

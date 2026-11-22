@@ -1,11 +1,8 @@
 # Learning to Defer with an Uncertain Rejector via Conformal Prediction
 
-Code for paper [Learning to Defer with an Uncertain Rejector via Conformal Prediction](https://openreview.net/forum?id=SZQJ8K2DUe) published in TMLR and published in [NeurIPS 2025 Workshop on Bayesian Decision-making and Uncertainty](https://openreview.net/forum?id=TWb9y4PNSW).
-
-
+Code for *Learning to Defer with an Uncertain Rejector via Conformal Prediction*, published in TMLR in 2026. An earlier version appeared at the NeurIPS 2024 Workshop on Bayesian Decision-making and Uncertainty. [TMLR paper](https://openreview.net/forum?id=SZQJ8K2DUe) · [Workshop paper](https://openreview.net/forum?id=TWb9y4PNSW)
 
 ## What is it?
-
 
 Learning to defer (L2D) allows prediction tasks to be allocated to a human or machine decision maker, thus getting the best of both’s abilities. Yet this allocation decision depends on a'rejector’ function, which could be poorly fit or otherwise misspecified. In this work, we perform uncertainty quantification for the rejector subcomponent of the L2D framework. We use conformal prediction to allow the reject to output sets instead of just the binary outcome of ‘defer’ or not. On tasks ranging from object to hate speech detection, we demonstrate that the uncertainty in the rejector translates to safer decisions via two forms of selective prediction.
 
@@ -13,182 +10,61 @@ As a motivating example, in the diagnosis of skin lesions using the HAM10000 dat
 
 This strategy aligns with practices in medical diagnostics, where clinicians often require additional data before making definitive decisions, thereby enhancing the reliability of diagnoses and treatments.
 
+## Implementation
 
-## Structure and Project Organization
+![Dataset and model configurations](datasets.png)
 
-![](datasets.png)
+The code for §§3.1–3.3 implements deferral sets, deferral intervals and the decision rules that use them. [Deferral sets](conformal/deferral_sets.py) · [Deferral intervals](conformal/deferral_intervals.py)
 
-This repository is organized as follows:
+OvA uses the upstream loss. The training loop saves the final epoch and exposes the logits for conformal calibration. A-SM uses Eq. (6) to estimate expert correctness. Dataset loaders, networks and experts build on two upstream implementations. [human_ai_deferral](https://github.com/clinicalml/human_ai_deferral/tree/94c05bcdb6822009835fe051dc11a0a878f3e6f4) · [Multi_L2D](https://github.com/rajevv/Multi_L2D/tree/3f2ad6bc93afdfd250faac21225f6b55074b6cf8)
 
-- datasetsdefer: implementation of the different datasets used, each as a seperate class
+## Quick start
 
-- methods: proposed RealizableSurrogate and MILP 
+Run clean CIFAR-10 with OvA. The first run downloads the data and trains the model.
 
-- conformal_expers: replicates main experiments structured by each dataset
-    - `CIFAR-10`: This folder contains the experiments for CIFAR-10 dataset
-    - `HAM10k`: This folder containes the experiments for HAM10000 dataset
-    - `Hatespeech`: This folder contains the experiments for Hatespeech dataset. 
-
-- networks: PyTorch model class definitions for linear, ResNet34, CNN and FFNN models
-
-- helpers: various methods used, including metrics implementation
-
-One can easily implement new surrogate methods by extending [BaseSurrogateMethod](baselines/basemethod.py). 
-
-
-
-## Installation
-
-Create a new conda environmnt (Python 3.8.5 with Pytorch 1.7.1) from our environment.yml file:
 ```bash
+git clone https://github.com/yizirui/conformal_L2D.git
+cd conformal_L2D
 conda env create -f environment.yml
-```
-
-Finally activate the environment:
-```bash
 conda activate deferral
+python -m experiments.run --config configs/cifar10.yaml --name quickstart --max-severity 0
 ```
 
-And clone the repo:
-```bash
-git clone https://github.com/yizirui/conformal_L2D
-```
+The results are in `output/expers/quickstart/SimpleCNN/ConformalAndThreshold/OvA/seed_42/alpha_0.1/metrics.csv`.
 
+## Paper experiments
 
-## Setup
-The experiment scripts are portable and accept CLI flags or environment variables for paths.
-Required setup:
-- Dataset files under `data/` (or set `L2D_DATA_DIR` to point elsewhere).
-- `config/columns.json` for CSV output schema (or set `L2D_COLUMNS_PATH`).
+Prepare the inputs for your dataset, then run the corresponding command from the repository root. [Data preparation](docs/data.md)
 
-Optional environment variables (override defaults):
-```bash
-export L2D_PROJECT_ROOT=/path/to/repo   # defaults to repo root
-export L2D_DATA_DIR=/path/to/data       # defaults to $L2D_PROJECT_ROOT/data
-export L2D_RESULTS_DIR=/path/to/results # defaults to $L2D_PROJECT_ROOT/output/expers
-export L2D_COLUMNS_PATH=/path/to/columns.json
-```
+| Experiment | Command |
+| --- | --- |
+| CIFAR-10 deferral sets, including SVHN at level 6 | `python -m experiments.run --config configs/cifar10.yaml` |
+| CIFAR-10 deferral intervals, levels 0–5 | `python -m experiments.run --config configs/cifar10_intervals.yaml` |
+| HAM10000 deferral sets | `python -m experiments.run --config configs/ham10000.yaml` |
+| Hate Speech deferral sets | `python -m experiments.run --config configs/hate_speech.yaml` |
 
-## Experiments
-Set up experiment variables
+All four configurations default to OvA, seed 42 and `alpha=0.1`. Add `--surrogate ALCE` for A-SM (CUDA required). The runner trains on D1 for the Table 3 epoch count, saves the final weights, and calibrates on held-out D2. Use `--seed` for another run or `--training-config` for a custom training configuration. [Table 3 training settings](configs/training.yaml)
 
-```bash
-EXPER_NAME=""
-ALPHA=0.1
-```
-If you run from outside the repo, set `L2D_PROJECT_ROOT` or pass `--data-dir`, `--results-dir`, `--columns-path` directly.
-### CIFAR10
+## Reading the results
 
-#### Major Experiment
-`synth_conformal_corrupted.py`
+Each `metrics.csv` contains one seed. `source_model` evaluates the base rejector. `cali_by_non_shifted` uses source calibration and `cali_by_shifted` uses target calibration. [CSV columns](configs/columns.json)
 
-```bash
-EXPER_NAME="cifar10_major"
-ALPHA=0.1
-SUROGATE="OvA"
-MODEL="SimpleCNN"
-
-python conformal_expers/cifar10/synth_conformal_corrupted.py \\
-  -d False \\
-  -ep $EXPER_NAME \\
-  -dm ConformalAndThreshold \\
-  -m $MODEL \\
-  -s $SUROGATE \\
-  -a $ALPHA \\
-  -r 42
-```
-
-Our experiments are on `corruption_types =  ['brightness']`. Other corruption types can be selected with `--corruptions` (comma-separated), for example:
-```python
-corruption_types = [
-    'brightness', 'contrast', 'defocus_blur', 'elastic_transform',
-    'fog', 'frost', 'gaussian_blur', 'gaussian_noise', 'glass_blur',
-    'impulse_noise', 'jpeg_compression', 'motion_blur', 'pixelate',
-    'saturate', 'shot_noise', 'snow', 'spatter', 'speckle_noise',
-    'zoom_blur'
-]
-```
-
-#### Binary Regression
-`conformal_expers/cifar10/binary_reg_synth_conformal_corrupted.py`
-
-```bash
-EXPER_NAME="cifar10_major"
-ALPHA=0.1
-SUROGATE="OvA"
-MODEL="SimpleCNN"
-python conformal_expers/cifar10/binary_reg_synth_conformal_corrupted.py -d True -ep $EXPER_NAME  -dm ConformalAndThreshold -m $MODEL -s $SUROGATE -a $ALPHA -r 42  
-```
-
-### HAM10000
-
-#### Major Experiment
-`conformal_expers/HAM10k/synth_conformal_corrupted_ham10000.py`
-
-```bash
-EXPER_NAME="ham10000_major"
-ALPHA=0.1
-SUROGATE="OvA"
-MODEL="ResNet34"
-
-python conformal_expers/HAM10k/synth_conformal_corrupted_ham10000.py \\
-  -d False \\
-  -ep $EXPER_NAME \\
-  -dm ConformalAndThreshold \\
-  -m $MODEL \\
-  -s $SUROGATE \\
-  -a $ALPHA \\
-  -r 42
-```
-
-
-### Hate Speech
-
-#### Major Experiment
-`conformal_expers/hate_speech/synth_conformal_corrupted_hate.py`
-
-```bash
-EXPER_NAME="hate_speech_major"
-ALPHA=0.1
-SUROGATE="OvA"
-MODEL="LinearNet"
-
-python conformal_expers/hate_speech/synth_conformal_corrupted_hate.py \\
-  -d False \\
-  -ep $EXPER_NAME \\
-  -dm ConformalAndThreshold \\
-  -m $MODEL \\
-  -s $SUROGATE \\
-  -a $ALPHA \\
-  -r 42
-```
-
-
-# Surrogate Losses
-We incorrperate a host of methods from the literature as well as our new methods:
-
-## OvASurrogate 
-One-over-all by (Verma and Nalisnick 2022): `
-SUROGATE="OvA"`
-
-## SelectivePrediction: 
-Classifier is trained on cross-entropy (CE), rejector tresholds confidence of classifier. Use variable `SUROGATE="SP"` 
-
-## ALCE: 
-Asymmetric softmax by (Cao et al., 2023):
-`SUROGATE=ALCE`
-
-
+| Paper result | Rows and metrics |
+| --- | --- |
+| Table 1 | On the clean source-calibrated row (`severity=0`), `empirical_coverage` measures inclusion of the observed expert correctness label (`m == y`). `empirical_width` is the mean set size. |
+| Table 2 | On clean rows, read `non_abstention_*` and `consensus_*`. Accuracy and deferral rate use answered examples. The fraction answered uses the full test set. |
+| Figure 2 | Compare OvA with source and target calibration and A-SM with target calibration, starting from each surrogate’s clean row. The `human_preferred_*` columns use all examples. For the CIFAR endpoint, select `corruption=svhn` and `severity=6`. |
+| §3.3 intervals | Defer when the lower bound exceeds the largest class probability. Model-preferred routes a full `[0,1]` interval to the classifier. `model_preferred_acc` uses all examples. |
 
 # Citation
 
 ```
 @article{
-fang2025learning,
+fang2026learning,
 title={Learning to Defer with an Uncertain Rejector via Conformal Prediction},
 author={Yizirui Fang and Eric Nalisnick},
 journal={Transactions on Machine Learning Research},
-year={2025},
+year={2026},
 url={https://openreview.net/forum?id=SZQJ8K2DUe},
 note={}
 }
@@ -196,6 +72,7 @@ note={}
 @inproceedings{fang2024learning,
   title={Learning to Defer with an Uncertain Rejector via Conformal Prediction},
   author={Fang, Yizirui and Nalisnick, Eric},
-  booktitle={NeurIPS 2024 Workshop on Bayesian Decision-making and Uncertainty}
+  booktitle={NeurIPS 2024 Workshop on Bayesian Decision-making and Uncertainty},
+  year={2024}
 }
 ```
